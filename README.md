@@ -1,5 +1,89 @@
 # Akurasi-naik-signifikan
 
+# Assume the following DataFrames are already created and populated:
+# df_model_ready: Your base DataFrame
+# train_model_driven_df: Training data, aitempchanged == 0
+# refined_outliers_adaptive_df: Output of refine_outliers_by_local_distinctness_adaptive
+# uuid_analysis_stats_df: Output of identify_label_interval_outliers_two_tailed
+#
+# Also assume you know the percentile values used for naming columns in uuid_analysis_stats_df, e.g.:
+# upper_perc_val_for_naming = 0.95
+# lower_perc_val_for_naming = 0.05
+
+# --- MODIFIED PART FOR SELECTING UUIDs FOR TIME SERIES PLOTS ---
+
+uuids_for_ts_plot = []
+max_samples_per_category = 10
+
+if 'refined_outliers_adaptive_df' in locals() and not refined_outliers_adaptive_df.empty:
+    print(f"\nSelecting sample UUIDs for time series plotting (up to {max_samples_per_category} per category)...")
+
+    # --- Select UUIDs with True Distinct High Outliers ---
+    true_distinct_high_instances = refined_outliers_adaptive_df[
+        (refined_outliers_adaptive_df['outlier_type'].isin(['high', 'high_and_low_rare'])) &
+        (refined_outliers_adaptive_df['is_locally_distinct_high'] == True)
+    ]
+    if not true_distinct_high_instances.empty:
+        uuids_with_true_high = true_distinct_high_instances['uuid'].unique()
+        sample_high_uuids = list(uuids_with_true_high[:max_samples_per_category])
+        uuids_for_ts_plot.extend(sample_high_uuids)
+        print(f"Found {len(uuids_with_true_high)} UUIDs with true distinct high outliers. Plotting for up to {len(sample_high_uuids)} of them: {sample_high_uuids}")
+    else:
+        print("No UUIDs found with true distinct high outliers.")
+
+    # --- Select UUIDs with True Distinct Low Outliers ---
+    true_distinct_low_instances = refined_outliers_adaptive_df[
+        (refined_outliers_adaptive_df['outlier_type'].isin(['low', 'high_and_low_rare'])) &
+        (refined_outliers_adaptive_df['is_locally_distinct_low'] == True)
+    ]
+    if not true_distinct_low_instances.empty:
+        uuids_with_true_low = true_distinct_low_instances['uuid'].unique()
+        sample_low_uuids = list(uuids_with_true_low[:max_samples_per_category])
+        uuids_for_ts_plot.extend(sample_low_uuids) # Add to the list
+        print(f"Found {len(uuids_with_true_low)} UUIDs with true distinct low outliers. Adding up to {len(sample_low_uuids)} unique ones for plotting: {sample_low_uuids}")
+    else:
+        print("No UUIDs found with true distinct low outliers.")
+    
+    # Ensure unique UUIDs in the final list to plot
+    uuids_for_ts_plot = sorted(list(set(uuids_for_ts_plot)))
+    
+    if uuids_for_ts_plot:
+        print(f"\nFinal list of {len(uuids_for_ts_plot)} unique UUIDs for time series plotting: {uuids_for_ts_plot}")
+
+        # Determine the column names for percentile thresholds from uuid_analysis_stats_df
+        # These depend on the percentile values you used in identify_label_interval_outliers_two_tailed
+        # Ensure these match the actual column names in your uuid_analysis_stats_df
+        upper_col_name = f'p{int(upper_perc_val_for_naming*100)}_value'
+        lower_col_name = f'p{int(lower_perc_val_for_naming*100)}_value'
+
+        # Ensure train_model_driven_df is available in the correct scope
+        # If it was created inside another function, you might need to return it or recreate it here.
+        # For this example, we assume it's available.
+        if 'train_model_driven_df' not in locals() or train_model_driven_df.empty:
+            print("Error: 'train_model_driven_df' is not available or empty. Cannot plot time series.")
+        else:
+            plot_uuid_interval_time_series(
+                train_model_driven_df,
+                refined_outliers_adaptive_df, # Pass the dataframe that has the distinctness flags
+                uuid_analysis_stats_df,
+                uuids_for_ts_plot,
+                upper_percentile_col_name_in_stats=upper_col_name,
+                lower_percentile_col_name_in_stats=lower_col_name
+            )
+    else:
+        print("\nNo specific UUIDs selected for time series plotting.")
+else:
+    print("Cannot select UUIDs for time series plotting: 'refined_outliers_adaptive_df' is not available or empty.")
+
+
+
+
+
+
+
+
+    
+
 import pandas as pd
 import numpy as np
 
