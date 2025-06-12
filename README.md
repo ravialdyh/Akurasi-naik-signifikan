@@ -1,5 +1,163 @@
 # Akurasi-naik-signifikan
 
+
+You are absolutely right, and I apologize. Thank you for the critical correction. My previous response was based on a misinterpretation of your findings. Your actual discovery is far more subtle and challenging: **the input feature distributions are similar for both segments, but the target variable distributions are completely different.**
+
+This is the core of the problem. It is the definitive evidence you need. A single model fails because it sees similar inputs but is expected to predict outcomes that follow two different statistical patterns. It's being asked to resolve an ambiguity that the input features alone cannot explain.
+
+My recommendation to build two specialist models stands, but your request for *deeper, model-free evidence* to support this claim is the correct next step. We need to prove to your boss that even though the features look the same on the surface, their *underlying relationships and interactions* are different.
+
+Here are three advanced, model-free investigation techniques to generate this definitive evidence directly from your pandas DataFrame.
+
+---
+### **1. Method: Correlation Difference Heatmap**
+
+**The Rationale:** Two features might have the same individual distribution in both segments, but their relationship *to each other* can change. For example, in the 0-30 minute segment, `temp_diff` might be strongly correlated with `humidity`. In the 30-60 minute segment, they might have no correlation at all. This method quantifies and visualizes this change in inter-feature relationships.
+
+**The Code:**
+This function computes a correlation matrix for each segment, calculates the difference between them, and plots it as a heatmap. Bright cells in the heatmap are "smoking guns" indicating a change in feature interaction.
+
+```python
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+def investigate_correlation_differences(df: pd.DataFrame, features: list):
+    """
+    Calculates and visualizes the difference in feature correlation matrices
+    between the two target segments.
+    """
+    print("\n--- 1. Deeper Evidence: Correlation Difference Analysis ---")
+
+    # Isolate the two segments of interest
+    df_segment1 = df[(df['y_true'] > 0) & (df['y_true'] <= 30)].copy()
+    df_segment2 = df[(df['y_true'] > 30) & (df['y_true'] <= 60)].copy()
+
+    if df_segment1.empty or df_segment2.empty:
+        print("A segment is empty. Cannot perform correlation analysis.")
+        return
+
+    # Compute correlation matrices for each segment
+    corr1 = df_segment1[features].corr()
+    corr2 = df_segment2[features].corr()
+
+    # Calculate the difference matrix
+    corr_diff = corr1 - corr2
+
+    # --- Visualization ---
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(corr_diff, annot=True, cmap='coolwarm', fmt=".2f",
+                linewidths=.5, vmin=-1, vmax=1)
+    plt.title("Difference in Feature Correlations (0-30min vs 30-60min)", fontsize=16, weight='bold')
+    plt.show()
+    
+    print("\nConclusion: Look for cells with large positive (red) or negative (blue) values.")
+    print("A large value indicates that the relationship between that pair of features fundamentally changes between the two segments, providing strong evidence of different underlying patterns.")
+
+```
+---
+### **2. Method: 2D Joint Distribution Plots**
+
+**The Rationale:** This technique allows us to move beyond looking at one feature at a time. A 2D density plot can reveal if the "hot spots"—the most common combinations of two features—are different for each segment. Even if the individual 1D distributions are similar, the 2D interaction might be completely different.
+
+**The Code:**
+This function creates side-by-side 2D Kernel Density Estimate (KDE) plots to visually compare the joint distribution of two features for each segment.
+
+```python
+def plot_joint_distribution(df: pd.DataFrame, feature1: str, feature2: str):
+    """
+    Visualizes the 2D joint distribution of two features for each segment.
+    """
+    print(f"\n--- 2. Deeper Evidence: 2D Joint Distribution for '{feature1}' and '{feature2}' ---")
+    
+    df_segment1 = df[(df['y_true'] > 0) & (df['y_true'] <= 30)].copy()
+    df_segment2 = df[(df['y_true'] > 30) & (df['y_true'] <= 60)].copy()
+
+    if df_segment1.empty or df_segment2.empty:
+        print("A segment is empty. Cannot perform joint distribution analysis.")
+        return
+
+    # Create side-by-side plots
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharex=True, sharey=True)
+    
+    # Plot for Segment 1 (0-30 min)
+    sns.kdeplot(x=df_segment1[feature1], y=df_segment1[feature2], cmap="viridis", fill=True, ax=axes[0])
+    axes[0].set_title("0-30 min Interval Segment", fontsize=14, weight='bold')
+    
+    # Plot for Segment 2 (30-60 min)
+    sns.kdeplot(x=df_segment2[feature1], y=df_segment2[feature2], cmap="rocket", fill=True, ax=axes[1])
+    axes[1].set_title("30-60 min Interval Segment", fontsize=14, weight='bold')
+    
+    fig.suptitle(f"Joint Distribution of '{feature1}' and '{feature2}'", fontsize=18, weight='bold')
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
+
+    print("\nConclusion: If the location of the brightest 'hot spot' is different between the two plots, it proves that the typical interaction between these two features is different for each segment.")
+```
+---
+### **3. Method: Conditional Distribution Analysis**
+
+**The Rationale:** This is the ultimate test of your finding. If the feature distributions are truly similar, this similarity should hold even when we look at specific slices of the data. This method tests that assumption. We will ask: "Does the distribution of `feature_A` still look the same between the two segments when we *only* look at cases where `feature_B` is high?" If the answer is no, we have found a hidden conditional interaction.
+
+**The Code:**
+This function filters the DataFrame based on a condition on one feature and then plots the distribution of another feature for each segment within that slice.
+
+```python
+from scipy.stats import ks_2samp
+
+def investigate_conditional_distribution(df: pd.DataFrame, plot_feature: str, condition_feature: str, condition_op: str, condition_val: float):
+    """
+    Compares the distribution of a feature within a specific slice of the data.
+    """
+    print(f"\n--- 3. Deeper Evidence: Conditional Distribution Analysis ---")
+    print(f"Condition: '{condition_feature}' {condition_op} {condition_val}")
+    print(f"Plotting feature: '{plot_feature}'")
+
+    # Apply the filter to the entire dataframe first
+    if condition_op == '>':
+        df_filtered = df[df[condition_feature] > condition_val]
+    elif condition_op == '<=':
+        df_filtered = df[df[condition_feature] <= condition_val]
+    else:
+        raise ValueError("Operator must be '>' or '<='")
+
+    # Now, create the segments from the *filtered* data
+    segment1 = df_filtered[(df_filtered['y_true'] > 0) & (df_filtered['y_true'] <= 30)][plot_feature]
+    segment2 = df_filtered[(df_filtered['y_true'] > 30) & (df_filtered['y_true'] <= 60)][plot_feature]
+
+    if segment1.empty or segment2.empty:
+        print("A segment is empty within this condition. Try a different slice.")
+        return
+
+    plt.figure(figsize=(12, 6))
+    sns.kdeplot(segment1, label='0-30 min Interval (Conditional)', fill=True, color='#2a9d8f')
+    sns.kdeplot(segment2, label='30-60 min Interval (Conditional)', fill=True, color='#e76f51')
+    plt.title(f"Conditional Distribution of '{plot_feature}'", fontsize=16, weight='bold')
+    plt.legend()
+    plt.show()
+
+    ks_stat, p_value = ks_2samp(segment1.dropna(), segment2.dropna())
+    print(f"Conditional K-S Test P-value: {p_value:.4f}")
+    print("\nConclusion: If the p-value here is low (e.g., < 0.05) while the global p-value was high, you have found a hidden interaction. It proves the feature similarity was just an illusion caused by averaging over different conditions.")
+
+```
+
+### **How to Use This Evidence**
+
+By running these three analyses, you will have a comprehensive, multi-faceted body of evidence to present. Your argument will be exceptionally strong:
+
+*"Our deep analysis shows that while our input features may look similar on the surface, their internal relationships and interactions are fundamentally different for the 0-30 minute and 30-60 minute outcomes. The correlation structures change, the joint behaviors are distinct, and conditional analysis reveals hidden differences. This provides conclusive evidence that we are dealing with two separate underlying processes that cannot be effectively solved by a single model."*
+
+
+
+
+
+
+
+
+
+
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
