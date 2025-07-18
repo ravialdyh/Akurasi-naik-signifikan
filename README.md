@@ -214,6 +214,221 @@ def lambda_handler(event, context):
 
 
 
+
+# ======================================================================================
+#
+#  Tabular Regression with Amazon SageMaker LightGBM
+#  - Enhanced with Latency Calculation, Lambda Function, and API Gateway Integration
+#  - ARCHITECTURE UPDATED FOR STATEFUL FEATURE ENGINEERING
+#
+# ======================================================================================
+
+# ======================================================================================
+# 1. SET UP & 2. MODEL TRAINING
+# ======================================================================================
+# This part of the notebook remains the same. We assume you have successfully
+# trained your LightGBM model using your PySpark feature engineering script
+# and have a deployed SageMaker endpoint.
+# The key is that the data used for training was the output of your complex script.
+# Therefore, the data sent for inference must have the exact same structure.
+
+import sagemaker, boto3, json, time
+from sagemaker import get_execution_role
+from sagemaker.utils import name_from_base
+
+aws_role = get_execution_role()
+aws_region = boto3.Session().region_name
+sess = sagemaker.Session()
+
+# Assume 'endpoint_name' is the name of your deployed SageMaker endpoint
+# endpoint_name = "jumpstart-example-lightgbm-regression-model-prod"
+# print(f"Using SageMaker Endpoint Name: {endpoint_name}")
+
+# ======================================================================================
+# NEW ARCHITECTURE OVERVIEW
+# ======================================================================================
+#
+# Your PySpark script for lags and rolling windows cannot run inside a simple Lambda.
+# The correct architecture is:
+#
+# 1. BATCH FEATURE ENGINEERING (AWS Glue / EMR)
+#    - Run your PySpark script daily to generate features for all entities.
+#    - OUTPUT: A table of features for each `uuid` for each day.
+#
+# 2. FEATURE STORE (Amazon DynamoDB / SageMaker Feature Store)
+#    - Store the output from the batch job in a database.
+#    - Example DynamoDB Structure:
+#      - Table Name: `user-features`
+#      - Primary Key (Partition Key): `uuid` (String)
+#      - Primary Key (Sort Key): `feature_date` (String, e.g., "2025-07-18")
+#      - Attribute: `feature_vector` (String, a CSV of all feature values)
+#
+# 3. API GATEWAY + LAMBDA FOR INFERENCE (Code below)
+#    - The API receives a simple request (e.g., for a specific user).
+#    - The Lambda queries the Feature Store to get the pre-computed features.
+#    - The Lambda sends these features to the SageMaker endpoint.
+#
+# ======================================================================================
+# 6. REVISED LAMBDA FUNCTION FOR INFERENCE (WITH FEATURE STORE)
+# ======================================================================================
+# This is the updated Python code for your Lambda function. It now fetches
+# pre-calculated features from DynamoDB.
+
+# --- lambda_function.py ---
+
+import os
+import boto3
+import json
+from datetime import datetime
+
+# Grab environment variables
+ENDPOINT_NAME = os.environ['ENDPOINT_NAME']
+FEATURE_TABLE_NAME = os.environ['FEATURE_TABLE_NAME'] # e.g., 'user-features'
+
+# Initialize AWS clients
+sagemaker_runtime = boto3.client('runtime.sagemaker')
+dynamodb = boto3.resource('dynamodb')
+feature_table = dynamodb.Table(FEATURE_TABLE_NAME)
+
+def lambda_handler(event, context):
+    """
+    Lambda handler that fetches pre-computed features from DynamoDB
+    and invokes the SageMaker endpoint.
+    """
+    print("Received event: " + json.dumps(event, indent=2))
+
+    try:
+        # API Gateway will pass query string parameters
+        # Example: /predict?uuid=user-123&date=2025-07-18
+        params = event.get('queryStringParameters', {})
+        user_uuid = params.get('uuid')
+        
+        # Use today's date if not provided
+        prediction_date = params.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
+
+        if not user_uuid:
+            raise ValueError("Query parameter 'uuid' is required.")
+
+        print(f"Fetching features for uuid: {user_uuid} on date: {prediction_date}")
+
+        # --- 1. Fetch features from DynamoDB (Feature Store) ---
+        response = feature_table.get_item(
+            Key={
+                'uuid': user_uuid,
+                'feature_date': prediction_date
+            }
+        )
+        
+        item = response.get('Item')
+        if not item:
+            raise ValueError(f"No features found for uuid {user_uuid} on date {prediction_date}")
+
+        # The feature vector is stored as a single CSV string
+        feature_payload = item.get('feature_vector')
+        if not feature_payload:
+             raise ValueError("Feature vector is missing in the database item.")
+
+        print(f"Successfully fetched feature vector: {feature_payload[:100]}...") # Log first 100 chars
+
+        # --- 2. Invoke SageMaker Endpoint ---
+        sagemaker_response = sagemaker_runtime.invoke_endpoint(
+            EndpointName=ENDPOINT_NAME,
+            ContentType='text/csv',
+            Body=feature_payload
+        )
+
+        print("Received response from SageMaker endpoint.")
+        result = json.loads(sagemaker_response['Body'].read().decode())
+        print(f"Prediction result: {result}")
+
+        # --- 3. Return a successful response ---
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
+            },
+            'body': json.dumps(result)
+        }
+
+    except Exception as e:
+        print(f"ERROR: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
+
+
+# --- Steps to Deploy This Architecture ---
+#
+# 1.  **Create DynamoDB Table:**
+#     -   Go to the DynamoDB console.
+#     -   Create a table (e.g., `user-features`).
+#     -   Set Partition Key: `uuid` (String).
+#     -   Set Sort Key: `feature_date` (String).
+#
+# 2.  **Set up AWS Glue Job:**
+#     -   Go to the AWS Glue console.
+#     -   Create a new Spark job.
+#     -   Use your PySpark script as the source.
+#     -   Modify the end of your script to write the final DataFrame (`df_model_input`)
+#       to the DynamoDB table you just created.
+#     -   Schedule this job to run daily.
+#
+# 3.  **Create the Lambda Function:**
+#     -   Go to the AWS Lambda Console and create a function (`lightgbm-feature-store-invoke`).
+#     -   Use the Python code above.
+#     -   **Permissions:** The Lambda's execution role needs permissions for:
+#         -   `sagemaker:InvokeEndpoint` (for your specific endpoint).
+#         -   `dynamodb:GetItem` (for your features table).
+#         -   Basic Lambda execution permissions (for CloudWatch Logs).
+#     -   **Environment variables:**
+#         -   `ENDPOINT_NAME`: Your SageMaker endpoint name.
+#         -   `FEATURE_TABLE_NAME`: The name of your DynamoDB table.
+#
+# 4.  **Create API Gateway:**
+#     -   Follow the steps from the previous response to create a REST API.
+#     -   Create a resource (e.g., `/predict`).
+#     -   Create a `GET` method on that resource.
+#     -   Integrate it with your new Lambda function (using Lambda Proxy integration).
+#     -   Enable CORS and deploy the API.
+#
+# ======================================================================================
+# 8. USE THE REVISED API GATEWAY URL IN POSTMAN
+# ======================================================================================
+#
+# 1.  **Method:** `GET`
+# 2.  **URL:** Paste the Invoke URL from API Gateway and add query parameters.
+#     `https://<api_id>.execute-api.<region>.amazonaws.com/prod/predict?uuid=some-user-id&date=2025-07-18`
+# 3.  **Authorization/Body:** None needed for a GET request.
+# 4.  **Send Request:** Click "Send". The API will now trigger the Lambda, which
+#     fetches the pre-computed features from DynamoDB and gets a prediction.
+#
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 To measure the latency of a prediction using the created SageMaker endpoint, you can time the invocation of the endpoint from the client side. This captures the round-trip time for sending the request, processing it on the endpoint, and receiving the response, which is a standard way to quantify prediction latency in this context.
 
 Based on the notebook code in the document (specifically in the inference section on pages 8-9), you can modify the `query_endpoint` function or add timing around an individual invocation. Here's how to do it step by step:
